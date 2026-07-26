@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+    from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_bcrypt import Bcrypt
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
@@ -6,8 +6,12 @@ import os
 import requests
 import yt_dlp
 import datetime
+import random
+import string
 
 app = Flask(__name__)
+
+# ===== CONFIGURATION =====
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///users.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'super-secret-key-change-this')
@@ -16,9 +20,7 @@ db = SQLAlchemy(app)
 bcrypt = Bcrypt(app)
 jwt = JWTManager(app)
 
-# ----------------------------
-# Database Models
-# ----------------------------
+# ===== DATABASE MODEL =====
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
@@ -31,9 +33,7 @@ class User(db.Model):
     def check_password(self, password):
         return bcrypt.check_password_hash(self.password_hash, password)
 
-# ----------------------------
-# Routes
-# ----------------------------
+# ===== ROUTES =====
 @app.route('/')
 def home():
     return jsonify({"message": "API is running", "status": "ok"})
@@ -75,7 +75,7 @@ def login():
 def download():
     data = request.get_json()
     url = data.get('url')
-    format_type = data.get('format', 'mp4')  # mp4, mp3
+    format_type = data.get('format', 'mp4')
 
     if not url:
         return jsonify({"error": "URL required"}), 400
@@ -95,15 +95,24 @@ def download():
                 "title": info.get('title'),
                 "url": url,
                 "format": format_type,
+                "file_path": file_path
             }), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# ----------------------------
-# Telegram Bot Webhook (for account generation)
-# ----------------------------
+# ===== TELEGRAM WEBHOOK =====
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_WEBHOOK_URL = os.environ.get('TELEGRAM_WEBHOOK_URL')
+
+def send_telegram_message(chat_id, text):
+    if not TELEGRAM_BOT_TOKEN:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    try:
+        requests.post(url, json=payload)
+    except:
+        pass
 
 @app.route('/telegram/webhook', methods=['POST'])
 def telegram_webhook():
@@ -118,34 +127,23 @@ def telegram_webhook():
     text = data['message'].get('text', '')
 
     if text == '/start':
-        send_telegram_message(chat_id, "Welcome! Send /newaccount to generate a new account.")
+        send_telegram_message(chat_id, "Welcome! Send /newaccount to generate credentials.")
     elif text == '/newaccount':
-        username = generate_username()
-        password = generate_password()
+        username = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        password = ''.join(random.choices(string.ascii_letters + string.digits, k=12))
+        # Save user to database
+        if not User.query.filter_by(username=username).first():
+            user = User(username=username)
+            user.set_password(password)
+            db.session.add(user)
+            db.session.commit()
         send_telegram_message(chat_id, f"✅ Account created!\nUsername: {username}\nPassword: {password}")
     else:
-        send_telegram_message(chat_id, "Unknown command. Use /newaccount to generate credentials.")
+        send_telegram_message(chat_id, "Unknown command. Use /newaccount.")
 
     return jsonify({"ok": True}), 200
 
-def send_telegram_message(chat_id, text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text}
-    requests.post(url, json=payload)
-
-def generate_username():
-    import random
-    import string
-    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
-
-def generate_password():
-    import random
-    import string
-    return ''.join(random.choices(string.ascii_letters + string.digits, k=12))
-
-# ----------------------------
-# Database & Run
-# ----------------------------
+# ===== CREATE TABLES =====
 with app.app_context():
     db.create_all()
 
